@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.git/
+.claude/
+снимки с разметками/
+разметка/
+*.zip
+*.db
+*.Zone.Identifier
+*:Zone.Identifier
+*_overlay.jpg
+*_clusters.jpg
+*_dots.csv
+*_clusters.csv
+clusters_summary.csv

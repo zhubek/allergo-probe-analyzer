@@ -25,6 +25,19 @@ python3 -m venv .venv
 
 Interactive docs at `http://localhost:8000/docs`.
 
+### With Docker
+
+```bash
+docker build -t allergo-probe-analyzer .
+docker run --rm -p 8000:8000 allergo-probe-analyzer
+```
+
+> **Feed full-resolution images.** The detection thresholds (notably
+> `MIN_BLOB_AREA`) are calibrated for the original ~5440px-wide microscopy
+> images. The `samples/` are downscaled to 1200px for quick wiring tests, so
+> their absolute counts won't match full-res results — adjust the thresholds in
+> `allergo_core.py` if you intend to analyze downsized images.
+
 ## Endpoints
 
 ### `GET /health`
