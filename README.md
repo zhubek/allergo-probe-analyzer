@@ -15,6 +15,29 @@ Detects dark-blue dots in microscopy images and flags the "positive" objects
 The detection logic lives in `allergo_core.py` (shared with the CLI scripts
 `detect_dots.py` and `detect_clusters.py`).
 
+## Documentation
+
+- **`CLAUDE.md`** — orientation for a Claude Code session (decisions, gotchas, repo map). Start here if picking the project up fresh.
+- **`docs/ALGORITHM.md`** — how detection works and how parameters were calibrated.
+- **`docs/ANALYSIS.md`** — the investigation into what the red-circle annotations mark.
+
+## Project structure
+
+```
+allergo_core.py        canonical detection (detect_dots / detect_clusters)
+api.py                 FastAPI service
+detect_dots.py         CLI: all dots over a folder
+detect_clusters.py     CLI: positive large blobs over a folder
+validate_clusters.py   recall check vs the human annotations
+requirements.txt       pinned dependencies
+Dockerfile             container build
+samples/               two 1200px sample images (downscaled, for quick tests)
+docs/                  ALGORITHM.md, ANALYSIS.md
+```
+
+Note: the full-resolution source images are **not** in this repo (large, medical
+data). The detectors work on any image you provide.
+
 ## Run
 
 ```bash
@@ -22,6 +45,9 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/uvicorn api:app --host 0.0.0.0 --port 8000
 ```
+
+Requires Python 3.10+ (3.12 recommended). System pip may be PEP-668 blocked —
+always use the venv as shown.
 
 Interactive docs at `http://localhost:8000/docs`.
 
@@ -102,9 +128,28 @@ curl --data-binary @image.png -H "Content-Type: image/png" \
      http://localhost:8000/analyze/image -o labeled.jpg
 ```
 
+## CLI batch processing
+
+To analyze a whole folder of images without the API:
+
+```bash
+# every dot -> per-image *_dots.csv + *_overlay.jpg
+.venv/bin/python detect_dots.py --dir path/to/images
+.venv/bin/python detect_dots.py one_image.png        # single file
+
+# positive large blobs -> *_clusters.csv + *_clusters.jpg + clusters_summary.csv
+.venv/bin/python detect_clusters.py --dir path/to/images
+```
+
+Outputs are written next to each source image. `--dir` globs `*.png` and skips
+the generated `*_overlay.jpg`, so re-running is idempotent.
+
 ## Tuning
 
-In `allergo_core.py`:
+In `allergo_core.py` (see `docs/ALGORITHM.md` for the full list):
 - `MIN_BLOB_AREA` (default 250) — size cutoff for a "positive" blob. Raise to
   mark only the very largest; lower to include medium blobs.
 - `DARK_DROP` / `BLUE_EXCESS` — how dark / how blue a pixel must be to count.
+
+Calibrated for full-resolution (~5440px) images; scale area thresholds with
+resolution for resized inputs.
