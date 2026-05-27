@@ -1,0 +1,27 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Large source data — NOT committed (full-res medical images, archives)
+снимки с разметками/
+разметка/
+*.zip
+*.db
+
+# WSL download metadata
+*.Zone.Identifier
+*:Zone.Identifier
+
+# Generated detection outputs (overlays / per-image CSVs live next to source images)
+*_overlay.jpg
+*_clusters.jpg
+*_dots.csv
+*_clusters.csv
+clusters_summary.csv
+
+# OS / editor
+.DS_Store
+
+# Claude Code harness local state
+.claude/
