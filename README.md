@@ -17,6 +17,7 @@ The detection logic lives in `allergo_core.py` (shared with the CLI scripts
 
 ## Documentation
 
+- **`docs/DEPLOYMENT.md`** — cross-platform guide to running locally (Windows/macOS/Linux) and deploying to a server or container. Start here if you just want to get it running.
 - **`CLAUDE.md`** — orientation for a Claude Code session (decisions, gotchas, repo map). Start here if picking the project up fresh.
 - **`docs/ALGORITHM.md`** — how detection works and how parameters were calibrated.
 - **`docs/ANALYSIS.md`** — the investigation into what the red-circle annotations mark.
