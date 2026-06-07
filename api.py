@@ -19,7 +19,7 @@ import base64
 import io
 
 import requests
-from fastapi import FastAPI, UploadFile, File, Request, HTTPException
+from fastapi import FastAPI, UploadFile, File, Request, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
 from PIL import Image, ImageDraw, UnidentifiedImageError
 
@@ -29,7 +29,13 @@ app = FastAPI(title="Allergo Probe Analyzer", version="1.0")
 
 MAX_BYTES = 60 * 1024 * 1024     # 60 MB cap (source images are ~24 MB)
 DOWNLOAD_TIMEOUT = 15            # seconds
-OVERLAY_MAXDIM = 1800            # downscale the returned labeled image
+OVERLAY_MAXDIM = 0               # 0 = no downscale (return labeled image at source resolution)
+OVERLAY_JPEG_QUALITY = 95        # higher quality, larger file
+THRESHOLD_QUERY = Query(None, ge=0.0, le=1.0,
+                        description="Classifier decision threshold (0..1). When set, "
+                                    "overrides ALLERGO_SCORE_THRESHOLD and the "
+                                    "classifier.joblib default. Has no effect in "
+                                    "threshold mode (no classifier loaded).")
 
 
 async def load_image(request: Request, file: UploadFile | None) -> Image.Image:
@@ -85,46 +91,62 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/model")
+def model():
+    """Report which thresholds are active — defaults or a tuned thresholds.json."""
+    return core.active_thresholds()
+
+
 @app.post("/analyze")
-async def analyze(request: Request, file: UploadFile | None = File(default=None)):
+async def analyze(request: Request,
+                  file: UploadFile | None = File(default=None),
+                  threshold: float | None = THRESHOLD_QUERY):
     """Return the positive (large dark-blue blob) detections as JSON."""
     img = await load_image(request, file)
-    clusters = core.detect_clusters(img)
+    clusters = core.detect_clusters(img, score_threshold=threshold)
     return JSONResponse({
         "width": img.width,
         "height": img.height,
         "count": len(clusters),
         "has_points": len(clusters) > 0,
-        "points": clusters,            # each: {x, y, area, w, h}
+        "points": clusters,            # each: {x, y, area, w, h, score?}
     })
 
 
 @app.post("/analyze/image")
-async def analyze_image(request: Request, file: UploadFile | None = File(default=None)):
-    """Return a JPEG: all dots circled (yellow) + positive blobs boxed (red)."""
-    img = await load_image(request, file)
-    dots = core.detect_dots(img)
-    clusters = core.detect_clusters(img)
+async def analyze_image(request: Request,
+                        file: UploadFile | None = File(default=None),
+                        threshold: float | None = THRESHOLD_QUERY):
+    """Return a JPEG with positive blobs marked as red boxes.
 
-    s = min(1.0, OVERLAY_MAXDIM / max(img.width, img.height))
-    ov = img.resize((int(img.width * s), int(img.height * s)), Image.LANCZOS)
+    Returned at source resolution (no downscale by default; see OVERLAY_MAXDIM).
+    JPEG quality 95 to preserve detail.
+    """
+    img = await load_image(request, file)
+    clusters = core.detect_clusters(img, score_threshold=threshold)
+
+    if OVERLAY_MAXDIM and max(img.width, img.height) > OVERLAY_MAXDIM:
+        s = OVERLAY_MAXDIM / max(img.width, img.height)
+        ov = img.resize((int(img.width * s), int(img.height * s)), Image.LANCZOS)
+    else:
+        s = 1.0
+        ov = img.copy()
+
+    # Scale box stroke + padding so they're visible regardless of image size.
+    dim = max(ov.width, ov.height)
+    pad = max(8, dim // 300)            # ~18px at 5440, 4px at 1200
+    stroke = max(2, dim // 700)         # ~7px at 5440, 2px at 1200
+
     dr = ImageDraw.Draw(ov)
-    for d in dots:                      # all dots: small yellow circles
-        x, y = d["x"] * s, d["y"] * s
-        r = max(2, d["radius"] * s)
-        dr.ellipse([x - r, y - r, x + r, y + r], outline=(255, 215, 0), width=1)
-    for c in clusters:                  # positives: red boxes
+    for c in clusters:
         x, y = c["x"] * s, c["y"] * s
-        hw, hh = c["w"] * s / 2 + 4, c["h"] * s / 2 + 4
-        dr.rectangle([x - hw, y - hh, x + hw, y + hh], outline=(255, 0, 0), width=2)
+        hw, hh = c["w"] * s / 2 + pad, c["h"] * s / 2 + pad
+        dr.rectangle([x - hw, y - hh, x + hw, y + hh], outline=(255, 0, 0), width=stroke)
 
     buf = io.BytesIO()
-    ov.save(buf, "JPEG", quality=85)
+    ov.save(buf, "JPEG", quality=OVERLAY_JPEG_QUALITY)
     return Response(
         content=buf.getvalue(),
         media_type="image/jpeg",
-        headers={
-            "X-Dot-Count": str(len(dots)),
-            "X-Positive-Count": str(len(clusters)),
-        },
+        headers={"X-Positive-Count": str(len(clusters))},
     )

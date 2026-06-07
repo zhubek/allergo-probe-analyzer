@@ -15,6 +15,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # app code (samples are handy for a quick smoke test inside the container)
 COPY allergo_core.py api.py ./
 COPY samples/ ./samples/
+# finetune package is imported by allergo_core at runtime (features extractor)
+COPY finetune/ ./finetune/
+# trained model + threshold fallback (classifier.joblib, thresholds.json)
+COPY models/ ./models/
 
 # run as non-root
 RUN useradd --create-home appuser

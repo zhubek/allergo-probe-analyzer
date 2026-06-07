@@ -5,8 +5,14 @@ __pycache__/
 .claude/
 снимки с разметками/
 разметка/
+# inputs to training — not needed in runtime container
+data/
+# generated training artifacts that aren't the model itself
+models/test_split.json
+models/grid_results.csv
+models/threshold_sweep_*.json
+# misc
 *.zip
-*.db
 *.Zone.Identifier
 *:Zone.Identifier
 *_overlay.jpg
@@ -14,3 +20,5 @@ __pycache__/
 *_dots.csv
 *_clusters.csv
 clusters_summary.csv
+demo_*.jpg
+labeled_*.jpg

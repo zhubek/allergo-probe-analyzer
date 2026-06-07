@@ -1,43 +1,61 @@
 # Allergo Probe Analyzer — API
 
-Detects dark-blue dots in microscopy images and flags the "positive" objects
-(the large dark-blue blobs that match the human red-circle annotations).
+Detects "positive" dark-blue blobs in microscopy images using a trained
+classifier (sklearn LogisticRegression on 19 hand-engineered per-blob
+features). Includes a fine-tuning pipeline so the model adapts to your own
+labeled data.
 
 ## What gets detected
 
-- **Dots** — every clearly-dark dark-blue dot (dark relative to the local bright
-  field, blue, not warm/brown). Touching dots are split via watershed.
-- **Positives ("points like this")** — the large dark-blue blobs. Inferred from
-  the human annotations: the circles mark the *largest* dark-blue blobs in each
-  field (validated at 86% recall vs the 35 hand-drawn circles). It is **not** a
-  "3+ separate dots" rule — see the analysis notes below.
+- **Positives** — significant dark-blue blobs that match the kind a human
+  expert would mark. The classifier learns "what counts as positive" from
+  `data/labels.db` (bbox annotations).
+- **Score per prediction** — the classifier's confidence in 0–1. Tune via
+  `?threshold=` query param or the `ALLERGO_SCORE_THRESHOLD` env var.
 
-The detection logic lives in `allergo_core.py` (shared with the CLI scripts
-`detect_dots.py` and `detect_clusters.py`).
+The detection logic lives in `allergo_core.py`; the classifier is
+`models/classifier.joblib` (trained by `finetune/classify_train.py`).
 
 ## Documentation
 
-- **`docs/DEPLOYMENT.md`** — cross-platform guide to running locally (Windows/macOS/Linux) and deploying to a server or container. Start here if you just want to get it running.
-- **`CLAUDE.md`** — orientation for a Claude Code session (decisions, gotchas, repo map). Start here if picking the project up fresh.
-- **`docs/ALGORITHM.md`** — how detection works and how parameters were calibrated.
-- **`docs/ANALYSIS.md`** — the investigation into what the red-circle annotations mark.
+- **`docs/DEPLOYMENT.md`** — cross-platform guide to running locally
+  (Windows/macOS/Linux) and deploying to a server or container.
+- **`docs/USAGE_RU.md`** — Краткая инструкция на русском: обучение модели и
+  использование API.
+- **`finetune/README.md`** — fine-tuning workflow: train your own classifier
+  or threshold set from `data/labels.db`.
+- **`CLAUDE.md`** — orientation for a Claude Code session (decisions, gotchas).
 
-## Project structure
+## Project layout
 
 ```
-allergo_core.py        canonical detection (detect_dots / detect_clusters)
+allergo_core.py        canonical detection (loads classifier or thresholds)
 api.py                 FastAPI service
-detect_dots.py         CLI: all dots over a folder
-detect_clusters.py     CLI: positive large blobs over a folder
-validate_clusters.py   recall check vs the human annotations
 requirements.txt       pinned dependencies
 Dockerfile             container build
-samples/               two 1200px sample images (downscaled, for quick tests)
-docs/                  ALGORITHM.md, ANALYSIS.md
+
+data/                  inputs
+  labels.db            ground truth (bbox annotations)
+  images/              YOU put full-res PNGs here (gitignored)
+
+models/                trained artifacts
+  classifier.joblib    the trained model (committed)
+  thresholds.json      fallback threshold config (committed)
+
+finetune/              fine-tuning scripts (see finetune/README.md)
+  features.py
+  matching.py
+  train.py             threshold grid search
+  classify_train.py    classifier trainer
+  evaluate.py          P/R/F1 evaluator
+  sweep_threshold.py   score-threshold sweep
+
+samples/               two 1200px sample images for quick wiring tests
+docs/                  DEPLOYMENT.md, USAGE_RU.md
 ```
 
-Note: the full-resolution source images are **not** in this repo (large, medical
-data). The detectors work on any image you provide.
+Source full-resolution images are not committed (medical data) — only the
+2 downscaled samples are.
 
 ## Run
 
@@ -47,8 +65,8 @@ python3 -m venv .venv
 .venv/bin/uvicorn api:app --host 0.0.0.0 --port 8000
 ```
 
-Requires Python 3.10+ (3.12 recommended). System pip may be PEP-668 blocked —
-always use the venv as shown.
+Requires Python 3.10+ (3.12 recommended). On Windows use
+`.venv\Scripts\python.exe` instead of `.venv/bin/...`.
 
 Interactive docs at `http://localhost:8000/docs`.
 
@@ -59,44 +77,49 @@ docker build -t allergo-probe-analyzer .
 docker run --rm -p 8000:8000 allergo-probe-analyzer
 ```
 
-> **Feed full-resolution images.** The detection thresholds (notably
-> `MIN_BLOB_AREA`) are calibrated for the original ~5440px-wide microscopy
-> images. The `samples/` are downscaled to 1200px for quick wiring tests, so
-> their absolute counts won't match full-res results — adjust the thresholds in
-> `allergo_core.py` if you intend to analyze downsized images.
+> **Feed full-resolution images** (~5440 px wide) for best results — the
+> training data is full-res. The bundled `samples/` are downscaled to 1200 px
+> for wiring tests, so their counts won't match what you'd see on real data.
 
 ## Endpoints
 
 ### `GET /health`
 Liveness check → `{"status": "ok"}`
 
-### `POST /analyze` — JSON of positive blobs
-Returns the positive large dark-blue blobs (count + locations).
+### `GET /model`
+Reports active mode (`classifier` / `tuned` / `default`), source path, and
+the metrics the classifier was validated against. Use this to verify the
+trained model is loaded.
 
+### `POST /analyze` — JSON of positive blobs
+
+```bash
+curl -F "file=@your-image.png" "http://localhost:8000/analyze?threshold=0.70"
+```
+
+Response:
 ```json
 {
-  "width": 5440,
-  "height": 3648,
-  "count": 5,
-  "has_points": true,
+  "width": 5440, "height": 3648,
+  "count": 5, "has_points": true,
   "points": [
-    {"x": 4067.4, "y": 539.6, "area": 1037, "w": 52, "h": 41}
+    {"x": 4067.4, "y": 539.6, "area": 1037, "w": 52, "h": 41, "score": 0.934}
   ]
 }
 ```
-`x,y` = blob centre (full-resolution pixels); `area` = blob area in px;
-`w,h` = bounding-box size.
+`x, y` = blob centre (full-resolution pixels); `area` = blob area in px;
+`w, h` = bounding-box size; `score` = classifier confidence (0–1).
 
-### `POST /analyze/image` — labeled image
-Returns a JPEG (`image/jpeg`, downscaled to 1800px longest side):
-- **all dots** → small yellow circles
-- **positive blobs** → red boxes
+### `POST /analyze/image` — labeled JPEG
 
-Counts are also returned in response headers `X-Dot-Count` and `X-Positive-Count`.
+```bash
+curl -F "file=@your-image.png" "http://localhost:8000/analyze/image?threshold=0.70" -o labeled.jpg
+```
 
-## Image input (both POST endpoints)
+Returns a JPEG at the source resolution (quality 95) with red boxes around
+each positive blob. The `X-Positive-Count` header gives the count.
 
-Any one of:
+## Image input modes (both POST endpoints)
 
 | Mode | How |
 |---|---|
@@ -107,50 +130,42 @@ Any one of:
 
 Max image size 60 MB.
 
+## Tuning at inference (no retraining)
+
+These env vars / query params change behavior without touching the model:
+
+| Setting | Default | What it does |
+|---|---|---|
+| `?threshold=` / `ALLERGO_SCORE_THRESHOLD` | 0.70 | Classifier decision cutoff (0–1) |
+| `ALLERGO_MAX_ASPECT_RATIO` | 3.5 | Reject blobs more elongated than this |
+| `ALLERGO_MAX_AREA_ZSCORE` | 9.0 | Reject extreme-size blobs *if* aspect>1.8 (catches streaks, spares round positives) |
+| `ALLERGO_CLASSIFIER` | `models/classifier.joblib` | Path to classifier; set to `NUL` (Windows) / `/dev/null` (Unix) to fall back to thresholds |
+| `ALLERGO_THRESHOLDS` | `models/thresholds.json` | Same idea for threshold fallback |
+
 ## Examples
 
-Two downsized sample microscopy images are in [`samples/`](samples/) so you can
-try the API immediately (`sample_sparse.jpg`, `sample_dense.jpg`).
-
 ```bash
-# JSON analysis, sample file upload
+# JSON analysis on a sample (downscaled — counts won't be realistic)
 curl -F "file=@samples/sample_sparse.jpg" http://localhost:8000/analyze
 
-# JSON analysis, file upload (any image)
-curl -F "file=@image.png" http://localhost:8000/analyze
+# JSON, full-res image, custom threshold
+curl -F "file=@your-image.png" "http://localhost:8000/analyze?threshold=0.85"
 
-# JSON analysis, image URL
+# Labeled image from URL
 curl -H "Content-Type: application/json" \
-     -d '{"url":"https://example.com/image.png"}' \
-     http://localhost:8000/analyze
-
-# Labeled image, raw bytes -> save JPEG
-curl --data-binary @image.png -H "Content-Type: image/png" \
+     -d '{"url":"https://example.com/img.png"}' \
      http://localhost:8000/analyze/image -o labeled.jpg
 ```
 
-## CLI batch processing
+## Fine-tuning to your data
 
-To analyze a whole folder of images without the API:
+See [`finetune/README.md`](finetune/README.md) for the workflow. In short:
 
 ```bash
-# every dot -> per-image *_dots.csv + *_overlay.jpg
-.venv/bin/python detect_dots.py --dir path/to/images
-.venv/bin/python detect_dots.py one_image.png        # single file
-
-# positive large blobs -> *_clusters.csv + *_clusters.jpg + clusters_summary.csv
-.venv/bin/python detect_clusters.py --dir path/to/images
+# put your full-res PNGs in data/images/  (filenames must match data/labels.db)
+python finetune/classify_train.py --workers 4   # ~10-15 min
+python finetune/evaluate.py                      # check P/R/F1
 ```
 
-Outputs are written next to each source image. `--dir` globs `*.png` and skips
-the generated `*_overlay.jpg`, so re-running is idempotent.
-
-## Tuning
-
-In `allergo_core.py` (see `docs/ALGORITHM.md` for the full list):
-- `MIN_BLOB_AREA` (default 250) — size cutoff for a "positive" blob. Raise to
-  mark only the very largest; lower to include medium blobs.
-- `DARK_DROP` / `BLUE_EXCESS` — how dark / how blue a pixel must be to count.
-
-Calibrated for full-resolution (~5440px) images; scale area thresholds with
-resolution for resized inputs.
+The trained classifier lands at `models/classifier.joblib`; `allergo_core`
+auto-loads it.
